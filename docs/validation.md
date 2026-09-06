@@ -1,15 +1,17 @@
 # Verified results
 
-Validated on Linux x86-64 against DuckDB **1.4.4**, using the portable
+Validated on Linux x86-64 against DuckDB **1.5.5**, using the portable
 `EXTENSION_STATIC_BUILD=ON` artifact. Both hosts were unmodified release binaries:
-the official GitHub CLI release and the PyPI Python wheel (Python 3.14).
-The remote/OAuth component was built with Rust 1.97.1.
+the official GitHub CLI release (d8cdaa33) and the PyPI Python wheel (Python 3.14).
+The remote/OAuth component was built with Rust 1.97.1. The extension was initially
+validated on DuckDB 1.4.4; the 1.5.5 upgrade rebuilt from fresh v1.5.5 sources and
+re-ran everything below.
 
 ## Automated integration suite
 
 ```text
 $ DUCKDB_CLI=/path/to/duckdb .venv/bin/python -m unittest discover -s tests -v
-Ran 22 tests in 9.544s
+Ran 35 tests in 15.958s
 OK
 ```
 
@@ -64,8 +66,9 @@ Finished `dev` profile
 ## Official CLI demonstration
 
 Executed the rendered `examples/setup.sql` and `examples/reopen.sql` with two
-independent CLI invocations opening the same file. The second used `-readonly`.
-Both exited successfully. It started with server status `disconnected`, retained
+independent CLI invocations opening the same file. The second used `-readonly`
+and both passed `-f` (DuckDB 1.5's friendly CLI suppresses query output for
+piped stdin). Both exited successfully. It started with server status `disconnected`, retained
 the discovery timestamp, and produced:
 
 ```text
@@ -90,17 +93,34 @@ CTEs, materialized response reuse, 2,050 selected rows across vector chunks,
 NULL and empty inputs, offline EXPLAIN/PREPARE, runtime external-access checks,
 input validation, and failed-call counts. Cross-transport chaining was verified
 against the stdio and HTTP/OAuth fixtures after reopening a read-only database.
-The stock DuckDB 1.4.4 CLI also executed correlated scalar calls successfully.
+The stock DuckDB 1.5.5 CLI also executed correlated scalar calls successfully.
 
 ```bash
-MCP_EXTENSION="$PWD/build/dav-8/extension/mcp_context/mcp_context.duckdb_extension" \
-DUCKDB_CLI=/tmp/opencode/duckdb-cli-1.4.4/duckdb \
+MCP_EXTENSION="$PWD/build/extension/mcp_context/mcp_context.duckdb_extension" \
+  DUCKDB_CLI=$(command -v duckdb) \
   .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The original build cache referenced the checkout's former directory. This run
-used a freshly compiled extension in `build/dav-8`, reusing the existing DuckDB
-static archives and the Cargo-verified current HTTP/OAuth archive.
+## DuckDB 1.5.5 upgrade (2026-09-06)
+
+Rebuilt against the pinned DuckDB **v1.5.5** checkout (d8cdaa33) with a fresh
+`build/` directory and re-ran the full 35-test suite above against the 1.5.5
+CLI and PyPI wheel. Only one source change was required:
+
+* `enable_external_access` is no longer a `DBConfigOptions` field in 1.5;
+  `CheckExternal` now reads it through
+  `Settings::Get<EnableExternalAccessSetting>(DBConfig::GetConfig(context))`.
+
+Behavior changes verified on 1.5.5:
+
+* The default `http` secret provider now redacts `bearer_token` in
+  `duckdb_secrets()` introspection, but still shows `extra_http_headers`
+  values; `PROVIDER mcp` redacts both (updated README/remote docs).
+* The friendly CLI suppresses query output for piped stdin scripts, so the
+  two-process example and CI use `-f <script>` instead of `< <script>`;
+  errors still fail the process (nonzero exit with `.bail on`).
+* `cargo clippy --locked --manifest-path remote/Cargo.toml -- -D warnings`
+  passes; three lints introduced by the scalar PR were fixed there.
 
 ## Scope of this evidence
 

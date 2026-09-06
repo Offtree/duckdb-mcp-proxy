@@ -3,6 +3,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "protocol/mcp_transport.hpp"
@@ -31,7 +32,7 @@ static string Ident(const string &s) {
 	return Quote(s, '"');
 }
 static void CheckExternal(ClientContext &context) {
-	if (!DBConfig::GetConfig(context).options.enable_external_access)
+	if (!Settings::Get<EnableExternalAccessSetting>(DBConfig::GetConfig(context)))
 		throw PermissionException("MCP requires enable_external_access");
 }
 static unique_ptr<MaterializedQueryResult> Query(Connection &c, const string &sql) {

@@ -1,6 +1,6 @@
 # Architecture investigation and decision
 
-Target: stock DuckDB **v1.4.4**, native loadable extension `mcp_context`.
+Target: stock DuckDB **v1.5.5**, native loadable extension `mcp_context`.
 This is an experiment, not a DuckDB fork. Research was done against the pinned
 DuckDB sources and `teaguesterling/duckdb_mcp` before implementation.
 
