@@ -1,23 +1,30 @@
-# Stateless HTTP, OAuth, and header authentication
+# HTTP protocol compatibility, OAuth, and header authentication
 
-The remote layer targets **MCP 2026-07-28**. It sends self-contained HTTP POSTs
+The remote layer prefers **MCP 2026-07-28**. It sends self-contained HTTP POSTs
 with protocol/client metadata, `MCP-Protocol-Version`, `Mcp-Method` and (for tool
-calls) `Mcp-Name`. There is no `initialize` exchange, `Mcp-Session-Id`, remote
-session cache or automatic downgrade. The HTTP library may reuse TCP connections.
+calls) `Mcp-Name`. Protocol compatibility is automatic: read-only `tools/list`
+probes try older revisions on an explicit version rejection or a response missing
+the modern `resultType` field. Older endpoints requesting initialization receive
+an `initialize` exchange and `notifications/initialized`; session IDs are retained
+in memory. No separate GET-based SSE stream is opened.
+The HTTP library may reuse TCP connections.
 
-An explicit `protocol_version` registration option also supports older endpoints
-that accept stateless POSTs. The allowlist is `2025-11-25`, `2025-06-18`,
-`2025-03-26`, `2024-11-05`, and `2024-10-07`, alongside the default `2026-07-28`.
-The selected revision is persisted in `_mcp.http_servers.options` and sent in
-the HTTP protocol header. Only the default revision receives the modern `_meta`
+The supported older revisions are `2025-11-25`, `2025-06-18`,
+`2025-03-26`, `2024-11-05`, and `2024-10-07`. Automatic selections are cached for
+the database instance and rechecked on reopening, before a tool call is sent.
+An explicit `protocol_version` option pins the version, bypassing negotiation and
+initialization for endpoints accepting handshake-free POSTs. The override is
+persisted in `_mcp.http_servers.options`. Only `2026-07-28` receives modern `_meta`
 fields and requires `resultType: complete`; older responses may omit that field.
-Explicit unsupported result types remain errors in both modes. This is not a
-session-based legacy transport implementation.
+Explicit unsupported result types remain errors in both modes. The older
+GET-SSE/POST transport is unsupported.
 
 Non-auth HTTP failures include the selected revision and, when available, the
 server's JSON-RPC `error.message` (bounded to 2,048 printable characters from a
 body bounded to 64 KiB). Non-JSON bodies and unrelated JSON fields are omitted.
-Requests are never automatically replayed after version errors.
+Tool requests are never automatically replayed. Authentication, network and
+ordinary server failures do not trigger version fallback. A failed cached request
+clears compatibility/session state so a later query can reconnect.
 Empty SSE data events (including Firecrawl's initial priming event) are skipped
 before parsing JSON-RPC responses.
 
