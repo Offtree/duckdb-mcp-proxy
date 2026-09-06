@@ -1,6 +1,6 @@
 # MCP Context: a durable MCP catalog for DuckDB
 
-An experimental **native extension for stock DuckDB 1.4.4**: C++ for the catalog
+An experimental **native extension for stock DuckDB 1.5.5**: C++ for the catalog
 and SQL layer, with a linked Rust component for HTTP and OAuth. Register a local
 stdio or remote HTTP MCP server once, discover its tools into persistent SQL table macros, and
 query them again after restarting DuckDB:
@@ -215,8 +215,9 @@ matching rules; an out-of-scope reference is rejected. `mcp_servers()` reports
 `headers_stored` or `secret_missing` locally.
 
 Existing built-in `http` secrets are supported. Prefer `PROVIDER mcp` for new
-ones: DuckDB 1.4.4's default `http` provider does not redact bearer tokens or
-custom-header values in introspection. `CREATE PERSISTENT SECRET` controls header
+ones: DuckDB 1.5.5's default `http` provider redacts bearer tokens in
+introspection but not custom-header values, while `PROVIDER mcp` redacts both.
+`CREATE PERSISTENT SECRET` controls header
 secret persistence; the registration option `persistent_secret` applies to OAuth
 login only. Default persistent storage remains unencrypted and outside the database.
 
@@ -234,7 +235,7 @@ cd duckdb-mcp-proxy
 bash scripts/build.sh
 ```
 
-The script fetches DuckDB v1.4.4 sources into `duckdb/`, then uses DuckDB's
+The script fetches DuckDB v1.5.5 sources into `duckdb/`, then uses DuckDB's
 supported out-of-tree CMake extension framework with `EXTENSION_STATIC_BUILD=ON`,
 the standard portable distribution mode. This builds the unmodified DuckDB static
 library and links the needed code into the loadable extension; it does not
@@ -251,7 +252,8 @@ Artifact:
 build/extension/mcp_context/mcp_context.duckdb_extension
 ```
 
-Use **DuckDB 1.4.4 with the matching platform/C++ ABI**. For the unsigned local
+Use **DuckDB 1.5.x with the matching platform/C++ ABI** (patch releases keep the
+extension ABI). For the unsigned local
 build, launch the official CLI with `duckdb -unsigned context.duckdb`.
 Compilation against another release is not a compatibility guarantee.
 Set `JOBS=4` to change build parallelism (default 2).
@@ -270,7 +272,7 @@ Future processes need `LOAD mcp_context` and unsigned extensions enabled.
 
 Successful [GitHub Actions runs](https://github.com/Offtree/duckdb-mcp-proxy/actions/workflows/test.yml)
 publish a tested Linux x86-64 binary as the
-`mcp_context-duckdb-v1.4.4-linux-amd64` artifact. Download and extract it to skip
+`mcp_context-duckdb-v1.5.5-linux-amd64` artifact. Download and extract it to skip
 compilation on a compatible Linux system. Artifacts require GitHub sign-in and
 expire according to GitHub's retention settings; build locally if your system's
 libraries are older than those on the CI runner. This project is not yet in
@@ -278,15 +280,16 @@ DuckDB's community extension repository.
 
 ## Run the two-process example
 
-With the stock v1.4.4 `duckdb` CLI on PATH:
+With the stock v1.5.5 `duckdb` CLI on PATH:
 
 ```bash
 # Render absolute paths into SQL scripts under build/examples/.
 python3 scripts/render_examples.py
 
 # These are two independent CLI processes opening the same database.
-duckdb -unsigned context.duckdb < build/examples/setup.sql
-duckdb -unsigned -readonly context.duckdb < build/examples/reopen.sql
+# DuckDB 1.5's friendly CLI suppresses query output for piped stdin; -f prints results.
+duckdb -no-init -unsigned context.duckdb -f build/examples/setup.sql
+duckdb -no-init -unsigned -readonly context.duckdb -f build/examples/reopen.sql
 ```
 
 Start with a fresh `context.duckdb` for this example. The renderer only writes

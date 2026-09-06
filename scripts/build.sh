@@ -2,10 +2,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ ! -f "$ROOT/duckdb/CMakeLists.txt" ]]; then
-  git clone --depth 1 --branch v1.4.4 https://github.com/duckdb/duckdb.git "$ROOT/duckdb"
+  git clone --depth 1 --branch v1.5.5 https://github.com/duckdb/duckdb.git "$ROOT/duckdb"
 fi
-if [[ "$(git -C "$ROOT/duckdb" rev-parse HEAD)" != "6ddac802ffa9bcfbcc3f5f0d71de5dff9b0bc250" ]]; then
-  echo "Expected the pinned DuckDB v1.4.4 checkout in $ROOT/duckdb" >&2
+if [[ "$(git -C "$ROOT/duckdb" rev-parse HEAD)" != "d8cdaa33fda8df955cc76ef58a280f68f4cd43fa" ]]; then
+  echo "Expected the pinned DuckDB v1.5.5 checkout in $ROOT/duckdb" >&2
   exit 1
 fi
 cmake -S "$ROOT/duckdb" -B "$ROOT/build" \

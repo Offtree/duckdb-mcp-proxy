@@ -506,6 +506,7 @@ impl Remote {
         unreachable!()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn request_version(
         &mut self,
         url: &str,
@@ -546,10 +547,8 @@ impl Remote {
             request = request.bearer_auth(token);
         }
         let key = format!("{url}\n{}\n{}", input["secret_name"], input["options"]);
-        if method != "initialize" {
-            if let Some(session) = self.sessions.get(&key) {
-                request = request.header("Mcp-Session-Id", session);
-            }
+        if method != "initialize" && let Some(session) = self.sessions.get(&key) {
+            request = request.header("Mcp-Session-Id", session);
         }
         let mut body = json!({"jsonrpc":"2.0","method":method,"params":params});
         if method != "notifications/initialized" {
@@ -704,10 +703,8 @@ impl Remote {
             }
             _ => return Err("Expected MCP 2026-07-28 resultType 'complete'".into()),
         }
-        if method == "initialize" {
-            if let Some(session) = session {
-                self.sessions.insert(key, session);
-            }
+        if method == "initialize" && let Some(session) = session {
+            self.sessions.insert(key, session);
         }
         Ok(result.clone())
     }

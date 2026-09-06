@@ -106,8 +106,8 @@ OAuth login is rejected for header-mode registrations, including at bind time.
 
 `TYPE http, PROVIDER mcp` is a small additional provider for DuckDB's existing
 HTTP secret type. It redacts the bearer token and the entire header map. Existing
-default-provider HTTP secrets are readable too, but DuckDB 1.4.4's default provider
-does not redact those fields. Persistent secrets use DuckDB's existing backend
+default-provider HTTP secrets are readable too, but DuckDB 1.5.5's default provider
+does not redact custom-header values (it does redact bearer tokens). Persistent secrets use DuckDB's existing backend
 and are reloaded normally on database restart.
 
 Rust converts header names/values using the HTTP library's validators and marks

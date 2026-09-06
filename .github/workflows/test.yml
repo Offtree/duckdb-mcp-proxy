@@ -16,7 +16,7 @@ jobs:
         run: JOBS=2 bash scripts/build.sh
       - name: Download official CLI
         run: |
-          curl -fL https://github.com/duckdb/duckdb/releases/download/v1.4.4/duckdb_cli-linux-amd64.zip -o "$RUNNER_TEMP/duckdb.zip"
+          curl -fL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip -o "$RUNNER_TEMP/duckdb.zip"
           unzip "$RUNNER_TEMP/duckdb.zip" -d "$RUNNER_TEMP/duckdb-cli"
       - name: Python and CLI integration tests
         run: |
@@ -26,11 +26,13 @@ jobs:
       - name: Official CLI, two independent processes
         run: |
           python scripts/render_examples.py
-          "$RUNNER_TEMP/duckdb-cli/duckdb" -unsigned "$RUNNER_TEMP/context.duckdb" < build/examples/setup.sql
-          "$RUNNER_TEMP/duckdb-cli/duckdb" -unsigned -readonly "$RUNNER_TEMP/context.duckdb" < build/examples/reopen.sql
+          # DuckDB 1.5's friendly CLI suppresses query output for piped stdin;
+          # -f prints results and still fails on errors.
+          "$RUNNER_TEMP/duckdb-cli/duckdb" -unsigned "$RUNNER_TEMP/context.duckdb" -f build/examples/setup.sql
+          "$RUNNER_TEMP/duckdb-cli/duckdb" -unsigned -readonly "$RUNNER_TEMP/context.duckdb" -f build/examples/reopen.sql
       - name: Upload tested extension
         uses: actions/upload-artifact@v4
         with:
-          name: mcp_context-duckdb-v1.4.4-linux-amd64
+          name: mcp_context-duckdb-v1.5.5-linux-amd64
           path: build/extension/mcp_context/mcp_context.duckdb_extension
           if-no-files-found: error

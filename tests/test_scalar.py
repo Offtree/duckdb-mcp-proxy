@@ -126,7 +126,7 @@ class ScalarIntegration(unittest.TestCase):
     def test_stock_cli_correlated_calls(self):
         cli = os.environ.get("DUCKDB_CLI")
         if not cli:
-            self.skipTest("Set DUCKDB_CLI to the stock DuckDB 1.4.4 executable")
+            self.skipTest("Set DUCKDB_CLI to the stock DuckDB 1.5.5 executable")
         from test_integration import EXTENSION
         self.c.close()
         result = subprocess.run(

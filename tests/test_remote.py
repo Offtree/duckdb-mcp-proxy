@@ -179,7 +179,7 @@ class RemoteIntegration(unittest.TestCase):
     def test_interactive_pragma_with_stock_cli(self):
         cli = os.environ.get("DUCKDB_CLI") or shutil.which("duckdb")
         if not cli:
-            self.skipTest("Set DUCKDB_CLI to the stock DuckDB 1.4.4 executable")
+            self.skipTest("Set DUCKDB_CLI to the stock DuckDB 1.5.5 executable")
         browser = Path(__file__).with_name("browser_fixture.py")
         env = {**os.environ, "BROWSER": f"{sys.executable} {browser} %s"}
         setup = f""".bail on
