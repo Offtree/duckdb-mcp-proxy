@@ -2,6 +2,7 @@
 //! OAuth state lives only between explicit login_begin/login_finish operations.
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
@@ -158,6 +159,65 @@ fn endpoint(text: &str) -> Result<Url> {
     Ok(url)
 }
 
+fn secret_headers(input: &Value) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    if !input["header_auth"].as_bool().unwrap_or(false) {
+        return Ok(headers);
+    }
+    let values = input["headers"]
+        .as_object()
+        .ok_or("HTTP secret headers must be an object")?;
+    for (name, value) in values {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| "Invalid HTTP secret header name")?;
+        if name.as_str().starts_with("mcp-")
+            || matches!(
+                name.as_str(),
+                "host"
+                    | "content-length"
+                    | "content-type"
+                    | "accept"
+                    | "connection"
+                    | "transfer-encoding"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+                    | "proxy-authorization"
+                    | "proxy-connection"
+            )
+        {
+            return Err("HTTP secret cannot override MCP protocol or transport headers".into());
+        }
+        if headers.contains_key(&name) {
+            return Err("Duplicate HTTP secret header name (case-insensitive)".into());
+        }
+        let mut value = HeaderValue::from_str(
+            value
+                .as_str()
+                .ok_or("HTTP secret header value must be a string")?,
+        )
+        .map_err(|_| "Invalid HTTP secret header value")?;
+        value.set_sensitive(true);
+        headers.insert(name, value);
+    }
+    if let Some(token) = input["bearer_token"].as_str() {
+        if token.is_empty() {
+            return Err("HTTP secret bearer_token cannot be empty".into());
+        }
+        if headers.contains_key(AUTHORIZATION) {
+            return Err("Specify bearer_token or an Authorization header, not both".into());
+        }
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| "Invalid HTTP secret bearer_token")?;
+        value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, value);
+    }
+    if headers.is_empty() {
+        return Err("HTTP authentication secret has no bearer_token or extra_http_headers".into());
+    }
+    Ok(headers)
+}
+
 struct Pending {
     session: AuthorizationSession,
     listener: TcpListener,
@@ -267,6 +327,8 @@ impl Remote {
                 Ok(json!({"authenticated":true}))
             }
             "request" => {
+                let headers = secret_headers(&input)?;
+                let header_auth = input["header_auth"].as_bool().unwrap_or(false);
                 let store = Store::new(&input["credentials"])?;
                 let _guard = store.install(sink);
                 let token = if input["credentials"].is_null() {
@@ -287,6 +349,8 @@ impl Remote {
                     input["method"].as_str().ok_or("Missing method")?,
                     input["params"].clone(),
                     token,
+                    headers,
+                    header_auth,
                 )
                 .await
             }
@@ -300,6 +364,8 @@ impl Remote {
         method: &str,
         mut params: Value,
         token: Option<String>,
+        headers: HeaderMap,
+        header_auth: bool,
     ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -311,6 +377,7 @@ impl Remote {
         let mut request = self
             .client
             .post(url)
+            .headers(headers)
             .header("MCP-Protocol-Version", VERSION)
             .header("Mcp-Method", method)
             .header("Accept", "application/json, text/event-stream");
@@ -330,6 +397,12 @@ impl Remote {
             .await
             .map_err(|_| "MCP HTTP request failed (network or TLS); request was not retried")?;
         if response.status() == StatusCode::UNAUTHORIZED {
+            if header_auth {
+                return Err(
+                    "MCP HTTP authentication rejected (401); update the referenced HTTP secret"
+                        .into(),
+                );
+            }
             if let Some(challenge) = response
                 .headers()
                 .get("WWW-Authenticate")
@@ -340,6 +413,12 @@ impl Remote {
             return Err("OAuth login required; run PRAGMA mcp_login('server_name')".into());
         }
         if response.status() == StatusCode::FORBIDDEN {
+            if header_auth {
+                return Err(
+                    "MCP access denied (403); check the referenced HTTP secret and its permissions"
+                        .into(),
+                );
+            }
             return Err("MCP access denied; login with the required scopes".into());
         }
         if !response.status().is_success() {

@@ -555,6 +555,7 @@ static string RegisterHTTP(ClientContext &context, const FunctionParameters &p) 
 		auto k = it.key();
 		auto &v = it.value();
 		bool valid = ((k == "client_id" || k == "client_metadata_url") && v.is_string()) ||
+		             (k == "auth" && (v == "headers" || v == "oauth")) ||
 		             (k == "persistent_secret" && v.is_boolean()) ||
 		             (k == "redirect_port" && v.is_number_unsigned() && v.get<uint64_t>() <= 65535);
 		if (k == "scopes" && v.is_array()) {
@@ -566,6 +567,7 @@ static string RegisterHTTP(ClientContext &context, const FunctionParameters &p) 
 		if (!valid)
 			throw InvalidInputException("Unsupported OAuth option or type: %s", k);
 	}
+	ConfigureRemoteAuth(context, config);
 	return MetadataDDL(context) + "INSERT INTO " + Meta(context) + "servers(name,transport,command,args) VALUES(" +
 	       Quote(name) + ",'http','','[]');INSERT INTO " + Meta(context) + "http_servers VALUES(" + Quote(name) + "," +
 	       Quote(config.url) + "," + Quote(config.secret_name) + "," + Quote(config.options.dump()) +
@@ -579,6 +581,8 @@ static unique_ptr<FunctionData> BindLogin(ClientContext &context, TableFunctionB
 	d->definition = Lookup(context, input.inputs[0].ToString());
 	if (d->definition.transport != "http" || d->definition.remote.secret_name.empty())
 		throw BinderException("OAuth login requires an HTTP server registered with a secret name");
+	if (d->definition.remote.options.value("auth", "oauth") == "headers")
+		throw BinderException("Header authentication uses an HTTP secret; OAuth login is not applicable");
 	if (input.table_function.name == "mcp_login_begin") {
 		d->login_action = "login_begin";
 		if (input.named_parameters.count("open_browser"))

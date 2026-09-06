@@ -21,6 +21,7 @@ private:
 	void *handle;
 };
 void RegisterRemoteSecrets(ExtensionLoader &loader);
+void ConfigureRemoteAuth(ClientContext &context, RemoteConfig &config);
 string RemoteAuthStatus(ClientContext &context, const RemoteConfig &config);
 } // namespace mcp_context
 } // namespace duckdb

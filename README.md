@@ -125,6 +125,72 @@ duckdb -unsigned -readonly remote_context.duckdb < build/examples/remote_reopen.
 
 The fixture automatically grants consent and is only for local testing.
 
+## API keys and header-based authentication
+
+Use an `http` secret for a static bearer token or arbitrary authentication headers.
+The extension's `mcp` provider redacts both fields in `duckdb_secrets()`:
+
+```sql
+CREATE PERSISTENT SECRET service_auth (
+    TYPE http,
+    PROVIDER mcp,
+    SCOPE 'https://your-server.example/mcp',
+    BEARER_TOKEN 'your-personal-access-token'
+);
+
+BEGIN;
+PRAGMA mcp_register_http('service', 'https://your-server.example/mcp',
+                         'service_auth', '{"auth":"headers"}');
+COMMIT;
+
+BEGIN;
+PRAGMA mcp_discover('service');
+COMMIT;
+
+-- Tool names and arguments come from your server.
+SELECT * FROM service.search(query := 'duckdb');
+```
+
+For custom headers, replace `BEARER_TOKEN` with a map:
+
+```sql
+CREATE PERSISTENT SECRET api_key_auth (
+    TYPE http,
+    PROVIDER mcp,
+    SCOPE 'https://your-server.example/mcp',
+    EXTRA_HTTP_HEADERS MAP {
+        'X-API-Key': 'your-api-key',
+        'X-Account': 'your-account'
+    }
+);
+```
+
+Reference `api_key_auth` when registering that server. `Authorization` can also be
+supplied as a custom header, but cannot be combined with `BEARER_TOKEN`. Other
+custom headers can accompany a bearer token. Header names are case-insensitive;
+MCP protocol and HTTP transport headers cannot be overridden.
+
+**No OAuth login is needed.** The registry stores only the secret name and auth
+mode. The secret is loaded for every remote operation, so `CREATE OR REPLACE
+PERSISTENT SECRET` rotates credentials without registering or discovering again.
+Persistent secrets work after reopening, including read-only database opens.
+An absent secret fails before sending a request; 401/403 errors ask you to update
+the secret and do not trigger OAuth or replay a tool call.
+
+When `auth` is omitted, registration recognizes an existing `http` secret and
+persists header mode automatically. Use explicit `{"auth":"headers"}` when the
+secret will be created later. HTTP secrets follow DuckDB's URL-prefix `SCOPE`
+matching rules; an out-of-scope reference is rejected. `mcp_servers()` reports
+`headers_stored` or `secret_missing` locally.
+
+Existing built-in `http` secrets are supported. Prefer `PROVIDER mcp` for new
+ones: DuckDB 1.4.4's default `http` provider does not redact bearer tokens or
+custom-header values in introspection. `CREATE PERSISTENT SECRET` controls header
+secret persistence; the registration option `persistent_secret` applies to OAuth
+login only. Default persistent storage remains unencrypted and outside the database.
+
+See [examples/header_auth.sql](examples/header_auth.sql) for a complete template.
+
 ## Build
 
 Requirements: Linux, Git, CMake ≥3.18, a C++ compiler, Python 3, and Rust/Cargo
@@ -230,6 +296,8 @@ compiled extension and dependency-free stdio and HTTP/OAuth fixtures. It checks:
 * PKCE, callback state/issuer checks, redaction and resource-bound secrets;
 * token refresh, rotation, revoked/transient failures and read-only process restart;
 * one-command browser login and reopen in the official CLI (when `DUCKDB_CLI` is set).
+* static bearer/custom-header secrets, redaction, rotation, scope checks and restart;
+* missing/invalid header credentials, protected headers and no OAuth fallback.
 
 See [verified results](docs/validation.md) for the completed local runs.
 
@@ -243,6 +311,7 @@ the host's dynamic-loader flags.
 |---|---|
 | `PRAGMA mcp_register(name, command, args_json)` | Create a server row and an owned schema. Stdio only; executable should be absolute, argument array contains strings. No connection. |
 | `PRAGMA mcp_register_http(name, url [, secret_name [, options_json]])` | Register a stateless remote endpoint without contacting it. |
+| `CREATE [PERSISTENT] SECRET name (TYPE http, PROVIDER mcp, ...)` | Store redacted `bearer_token` and/or `extra_http_headers`; register with `auth: headers` or an existing HTTP secret reference. |
 | `PRAGMA mcp_login(name)` | Interactive browser OAuth login; saves credentials as a DuckDB secret. |
 | `mcp_login_begin(name, open_browser := false)` / `mcp_login_finish(name)` | Two-step login, exposed as table functions for `CALL`. Login effects occur at execution, not bind. |
 | `mcp_servers()` | Name, transport, command, args, connection status, discovery timestamp, URL, secret reference and auth status. HTTP status is `stateless`; auth status reflects locally stored credentials, not an online validity check. |

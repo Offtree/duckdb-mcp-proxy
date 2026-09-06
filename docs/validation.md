@@ -9,7 +9,7 @@ The remote/OAuth component was built with Rust 1.97.1.
 
 ```text
 $ DUCKDB_CLI=/path/to/duckdb .venv/bin/python -m unittest discover -s tests -v
-Ran 14 tests in 8.234s
+Ran 20 tests in 9.463s
 OK
 ```
 
@@ -34,6 +34,16 @@ Nine remote/OAuth tests additionally verify:
 
 The HTTP/OAuth fixture runs in a separate process, independent of an embedded
 Python host's GIL during PRAGMA expansion. No real account credentials were used.
+
+Six header-auth tests also passed:
+
+* Static bearer credentials persist across OS processes without OAuth.
+* Custom headers are redacted, and replacing the secret rotates the next request.
+* Existing default-provider HTTP secrets and raw Authorization headers work.
+* Missing, dropped and out-of-scope secrets fail before network access.
+* Invalid headers, protocol overrides, duplicate names and conflicting
+  Authorization values are rejected without including secret values in errors.
+* Rejected credentials produce one request and no OAuth prompt or retry.
 
 Rust verification also passed:
 

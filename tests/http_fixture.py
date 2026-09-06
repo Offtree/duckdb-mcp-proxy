@@ -166,7 +166,17 @@ class Fixture:
                             self.reply(400, {"error": "no handshake"})
                             return
                         token = self.headers.get("Authorization", "").removeprefix("Bearer ")
-                        if self.path != "/public" and token not in fixture.access_tokens:
+                        if self.path == "/mcp/bearer":
+                            authorized = token == "fixture-static-bearer"
+                        elif self.path == "/mcp/headers":
+                            key = self.headers.get("X-API-Key", "")
+                            authorized = key in ("fixture-header-key", "fixture-header-key-rotated") and self.headers.get("X-Account") == "acme"
+                            fixture.events[-1]["rotated_header"] = key == "fixture-header-key-rotated"
+                        elif self.path == "/mcp/authorization":
+                            authorized = self.headers.get("Authorization") == "Basic fixture-basic"
+                        else:
+                            authorized = self.path == "/public" or token in fixture.access_tokens
+                        if not authorized:
                             self.reply(401, {}, {"WWW-Authenticate": f'Bearer resource_metadata="{fixture.base}/.well-known/oauth-protected-resource{self.path}"'})
                             return
                         if method == "tools/list":

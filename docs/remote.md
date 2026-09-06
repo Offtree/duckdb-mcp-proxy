@@ -1,4 +1,4 @@
-# Stateless HTTP and native OAuth (0.2)
+# Stateless HTTP, OAuth, and header authentication
 
 The remote layer targets **MCP 2026-07-28**. It sends self-contained HTTP POSTs
 with protocol/client metadata, `MCP-Protocol-Version`, `Mcp-Method` and (for tool
@@ -67,7 +67,34 @@ DuckDB's default persistent secret backend is an unencrypted, permission-protect
 file outside the `.duckdb` database. OAuth writes are independent of SQL rollback,
 which is necessary when a provider rotates a refresh token.
 
-## Requests and refresh
+## Header-based authentication
+
+HTTP secret references use persisted `options.auth = "headers"`. Registration
+infers this mode if the named secret already has type `http`; explicit mode also
+allows creating the secret later. Existing OAuth registrations retain their
+behavior and metadata format.
+
+The C++ adapter resolves the named `http` `KeyValueSecret` for each operation and
+enforces its DuckDB URL-prefix scope. It passes `bearer_token` and
+`extra_http_headers` directly across the C ABI, without storing either in catalog
+metadata or SQL macros. HTTP secrets are read-only to the client: rotation is
+performed by replacing the secret through DuckDB. Missing secrets fail before I/O.
+OAuth login is rejected for header-mode registrations, including at bind time.
+
+`TYPE http, PROVIDER mcp` is a small additional provider for DuckDB's existing
+HTTP secret type. It redacts the bearer token and the entire header map. Existing
+default-provider HTTP secrets are readable too, but DuckDB 1.4.4's default provider
+does not redact those fields. Persistent secrets use DuckDB's existing backend
+and are reloaded normally on database restart.
+
+Rust converts header names/values using the HTTP library's validators and marks
+all secret values sensitive. It rejects case-insensitive duplicates, conflicting
+bearer/Authorization configuration, empty credentials, and attempts to override
+MCP or transport headers such as Host, Content-Length or MCP-Protocol-Version.
+Header values are never included in these error messages. Static-header 401/403
+responses do not enter OAuth discovery, start login, or replay the request.
+
+## OAuth requests and refresh
 
 Before a credentialed request, the extension loads the secret, resolves OAuth
 metadata, validates issuer binding and asks the SDK for an access token. The SDK
@@ -96,6 +123,9 @@ process. The fixture verifies PKCE, redirect/client binding, issuer/state,
 resource indicators and rotating refresh tokens. Another test drives the stock
 CLI's one-command browser login through a test browser process, then reopens the
 database read-only in another CLI process. No real account credentials are used.
+Header-auth tests additionally cover a persistent bearer secret across two OS
+processes, custom API-key headers and rotation, raw Authorization headers,
+redaction, scope enforcement, missing secrets and invalid-header rejection.
 
 This is not a certification for every OAuth deployment. The API supports native
 public clients, with pre-registered IDs, CIMD configuration or dynamic registration.
