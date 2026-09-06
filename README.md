@@ -52,6 +52,30 @@ and production recommendation.
 Remote servers use **MCP 2026-07-28**, with no initialization handshake or MCP
 session IDs. OAuth login, token storage and refresh are handled by the extension.
 
+For older endpoints that accept requests without initialization (including
+Firecrawl), set `protocol_version` explicitly in the fourth registration argument:
+
+```sql
+PRAGMA mcp_register_http('firecrawl', 'https://mcp.firecrawl.dev/v2/mcp-oauth',
+    'firecrawl_oauth', '{"protocol_version":"2025-11-25"}');
+```
+
+The override persists across restarts. Supported values are `2026-07-28` (default),
+`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, and `2024-10-07`.
+Older revisions omit the newer per-request metadata and allow responses without
+`resultType`. This compatibility mode does not implement initialization or MCP
+sessions; endpoints requiring those remain unsupported. There is no automatic
+downgrade or request replay.
+
+For an already registered server, update its persisted options before querying
+in a new connection (preserving its secret reference and other options):
+
+```sql
+UPDATE _mcp.http_servers
+SET options = json_merge_patch(options, '{"protocol_version":"2025-11-25"}')
+WHERE name = 'firecrawl';
+```
+
 ```sql
 LOAD 'build/extension/mcp_context/mcp_context.duckdb_extension';
 

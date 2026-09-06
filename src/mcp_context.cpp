@@ -555,6 +555,8 @@ static string RegisterHTTP(ClientContext &context, const FunctionParameters &p) 
 		auto k = it.key();
 		auto &v = it.value();
 		bool valid = ((k == "client_id" || k == "client_metadata_url") && v.is_string()) ||
+		             (k == "protocol_version" && (v == "2026-07-28" || v == "2025-11-25" || v == "2025-06-18" ||
+		                                          v == "2025-03-26" || v == "2024-11-05" || v == "2024-10-07")) ||
 		             (k == "auth" && (v == "headers" || v == "oauth")) ||
 		             (k == "persistent_secret" && v.is_boolean()) ||
 		             (k == "redirect_port" && v.is_number_unsigned() && v.get<uint64_t>() <= 65535);

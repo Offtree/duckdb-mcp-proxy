@@ -5,6 +5,22 @@ with protocol/client metadata, `MCP-Protocol-Version`, `Mcp-Method` and (for too
 calls) `Mcp-Name`. There is no `initialize` exchange, `Mcp-Session-Id`, remote
 session cache or automatic downgrade. The HTTP library may reuse TCP connections.
 
+An explicit `protocol_version` registration option also supports older endpoints
+that accept stateless POSTs. The allowlist is `2025-11-25`, `2025-06-18`,
+`2025-03-26`, `2024-11-05`, and `2024-10-07`, alongside the default `2026-07-28`.
+The selected revision is persisted in `_mcp.http_servers.options` and sent in
+the HTTP protocol header. Only the default revision receives the modern `_meta`
+fields and requires `resultType: complete`; older responses may omit that field.
+Explicit unsupported result types remain errors in both modes. This is not a
+session-based legacy transport implementation.
+
+Non-auth HTTP failures include the selected revision and, when available, the
+server's JSON-RPC `error.message` (bounded to 2,048 printable characters from a
+body bounded to 64 KiB). Non-JSON bodies and unrelated JSON fields are omitted.
+Requests are never automatically replayed after version errors.
+Empty SSE data events (including Firecrawl's initial priming event) are skipped
+before parsing JSON-RPC responses.
+
 ## Components
 
 ```text

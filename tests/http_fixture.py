@@ -159,7 +159,14 @@ class Fixture:
                         params = request.get("params", {})
                         fixture.events.append({"event": "mcp", "method": method, "params": params,
                             "session_header": self.headers.get("Mcp-Session-Id")})
-                        if self.headers.get("Mcp-Session-Id") or self.headers.get("MCP-Protocol-Version") != "2026-07-28" or self.headers.get("Mcp-Method") != method or params.get("_meta", {}).get("io.modelcontextprotocol/protocolVersion") != "2026-07-28" or params.get("_meta", {}).get("io.modelcontextprotocol/clientCapabilities") != {}:
+                        legacy = self.path.startswith("/mcp/legacy")
+                        if legacy and self.headers.get("MCP-Protocol-Version") != "2025-11-25":
+                            self.reply(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Unsupported protocol version; supported versions: 2025-11-25"}})
+                            return
+                        if legacy and "_meta" in params:
+                            self.reply(400, {"error": "unexpected modern metadata"})
+                            return
+                        if self.headers.get("Mcp-Session-Id") or (not legacy and (self.headers.get("MCP-Protocol-Version") != "2026-07-28" or self.headers.get("Mcp-Method") != method or params.get("_meta", {}).get("io.modelcontextprotocol/protocolVersion") != "2026-07-28" or params.get("_meta", {}).get("io.modelcontextprotocol/clientCapabilities") != {})):
                             self.reply(400, {"error": "stateless metadata required"})
                             return
                         if method in ("initialize", "notifications/initialized"):
@@ -175,7 +182,7 @@ class Fixture:
                         elif self.path == "/mcp/authorization":
                             authorized = self.headers.get("Authorization") == "Basic fixture-basic"
                         else:
-                            authorized = self.path == "/public" or token in fixture.access_tokens
+                            authorized = legacy or self.path == "/public" or token in fixture.access_tokens
                         if not authorized:
                             self.reply(401, {}, {"WWW-Authenticate": f'Bearer resource_metadata="{fixture.base}/.well-known/oauth-protected-resource{self.path}"'})
                             return
@@ -201,8 +208,11 @@ class Fixture:
                             self.reply(400, {"error": "unexpected method"})
                             return
                         response = {"jsonrpc": "2.0", "id": request["id"], "result": {**result, "resultType": "complete"}}
+                        if legacy:
+                            del response["result"]["resultType"]
                         if self.path.endswith("/sse"):
-                            body = ('data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n'
+                            body = ('id: priming-event\ndata: \n\n'
+                                + 'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n'
                                 + "event: message\ndata: " + json.dumps(response) + "\n\n").encode()
                             self.send_response(200)
                             self.send_header("Content-Type", "text/event-stream")

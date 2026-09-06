@@ -9,7 +9,7 @@ The remote/OAuth component was built with Rust 1.97.1.
 
 ```text
 $ DUCKDB_CLI=/path/to/duckdb .venv/bin/python -m unittest discover -s tests -v
-Ran 20 tests in 9.463s
+Ran 22 tests in 9.544s
 OK
 ```
 
@@ -44,6 +44,13 @@ Six header-auth tests also passed:
 * Invalid headers, protocol overrides, duplicate names and conflicting
   Authorization values are rejected without including secret values in errors.
 * Rejected credentials produce one request and no OAuth prompt or retry.
+
+Two protocol-compatibility tests cover persisted version overrides on reopen,
+older JSON/SSE responses without `resultType`, empty SSE priming events,
+unsupported-version diagnostics without replay, and invalid option rejection.
+Live validation on 2026-09-06 successfully discovered three tools from
+`https://mcp.firecrawl.dev/v2/mcp` using `protocol_version: 2025-11-25` through
+the rebuilt extension. The authenticated Firecrawl endpoint was not exercised.
 
 Rust verification also passed:
 

@@ -328,7 +328,6 @@ impl Remote {
             }
             "request" => {
                 let headers = secret_headers(&input)?;
-                let header_auth = input["header_auth"].as_bool().unwrap_or(false);
                 let store = Store::new(&input["credentials"])?;
                 let _guard = store.install(sink);
                 let token = if input["credentials"].is_null() {
@@ -350,7 +349,7 @@ impl Remote {
                     input["params"].clone(),
                     token,
                     headers,
-                    header_auth,
+                    &input,
                 )
                 .await
             }
@@ -365,20 +364,32 @@ impl Remote {
         mut params: Value,
         token: Option<String>,
         headers: HeaderMap,
-        header_auth: bool,
+        input: &Value,
     ) -> Result<Value> {
+        let header_auth = input["header_auth"].as_bool().unwrap_or(false);
+        let version = input["options"]["protocol_version"]
+            .as_str()
+            .unwrap_or(VERSION);
+        if !matches!(
+            version,
+            "2026-07-28" | "2025-11-25" | "2025-06-18" | "2025-03-26" | "2024-11-05" | "2024-10-07"
+        ) {
+            return Err("Unsupported MCP protocol_version".into());
+        }
         let id = self.next_id;
         self.next_id += 1;
-        params["_meta"] = json!({
-            "io.modelcontextprotocol/protocolVersion": VERSION,
-            "io.modelcontextprotocol/clientCapabilities": {},
-            "io.modelcontextprotocol/clientInfo": {"name":"duckdb-mcp-context","version":"0.2.0"}
-        });
+        if version == VERSION {
+            params["_meta"] = json!({
+                "io.modelcontextprotocol/protocolVersion": VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {"name":"duckdb-mcp-context","version":"0.2.0"}
+            });
+        }
         let mut request = self
             .client
             .post(url)
             .headers(headers)
-            .header("MCP-Protocol-Version", VERSION)
+            .header("MCP-Protocol-Version", version)
             .header("Mcp-Method", method)
             .header("Accept", "application/json, text/event-stream");
         if method == "tools/call" {
@@ -422,9 +433,32 @@ impl Remote {
             return Err("MCP access denied; login with the required scopes".into());
         }
         if !response.status().is_success() {
+            let status = response.status();
+            let mut stream = response.bytes_stream();
+            let mut body = Vec::new();
+            while let Some(Ok(part)) = stream.next().await {
+                if body.len() + part.len() > 65536 {
+                    break;
+                }
+                body.extend_from_slice(&part);
+            }
+            let detail = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
+                .map(|s| {
+                    s.chars()
+                        .filter(|c| !c.is_control())
+                        .take(2048)
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
             return Err(format!(
-                "MCP HTTP status {}; request was not retried",
-                response.status()
+                "MCP HTTP status {status}; protocol_version={version}; request was not retried{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
             ));
         }
         let content_type = response
@@ -449,6 +483,10 @@ impl Remote {
             while let Some(event) = stream.next().await {
                 let event = event.map_err(|_| "Invalid or oversized MCP SSE response")?;
                 if let Some(data) = event.data {
+                    // SSE priming/keepalive events can carry an empty data field.
+                    if data.trim().is_empty() {
+                        continue;
+                    }
                     let message: Value = serde_json::from_str(&data)
                         .map_err(|_| "Invalid MCP JSON in SSE response")?;
                     if message.get("id").is_some() {
@@ -486,6 +524,7 @@ impl Remote {
                     .into(),
             ),
             Some("complete") => {}
+            None if version != VERSION && result.get("resultType").is_none() => {}
             _ => return Err("Expected MCP 2026-07-28 resultType 'complete'".into()),
         }
         Ok(result.clone())
