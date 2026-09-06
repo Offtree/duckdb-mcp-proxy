@@ -1,0 +1,11 @@
+/duckdb/
+/build/
+/.venv/
+/.cache/
+/remote/target/
+.env
+.env.*
+*.duckdb_secret
+__pycache__/
+*.duckdb
+*.duckdb.wal

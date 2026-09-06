@@ -1,0 +1,22 @@
+[package]
+name = "mcp-context-remote"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "302319861a4b5ab538f6aebf25befdc3c7dfe039", default-features = false, features = ["client", "auth", "reqwest"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "stream", "rustls"] }
+tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
+serde_json = "1"
+async-trait = "0.1"
+futures = "0.3"
+sse-stream = "0.2.4"
+webbrowser = "1"
+
+[profile.release]
+panic = "unwind"
