@@ -64,10 +64,17 @@ schema without executing a potentially mutating tool to infer columns.
 Generated macros have named default arguments and validate types in the native
 binder. NULL optional macro arguments are omitted. Generic JSON arguments allow
 explicit JSON null. SQL table function arguments must be bind-time constants;
-correlated/lateral tool calls are not supported. Uncorrelated live results join
+correlated/lateral calls through that surface are not supported. Uncorrelated live results join
 normally with local tables. Calls are materialized once per scan, with no
 automatic retry of tools/call and no predicate pushdown. SQL rollback cannot
 undo external effects.
+
+The scalar companion `mcp_tool_json(server, tool, args)` now supplies the correlated
+path for registered stdio and HTTP/OAuth servers. It shares the runtime, input
+validation and payload extraction, returning JSON without relational shaping.
+Volatile execution prevents constant folding; each evaluated non-NULL row makes
+a call. See the README's chaining examples and execution semantics for materialized
+and recursive CTEs, error handling and external effects.
 
 ## Source references
 

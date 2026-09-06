@@ -160,13 +160,36 @@ class Fixture:
                         fixture.events.append({"event": "mcp", "method": method, "params": params,
                             "session_header": self.headers.get("Mcp-Session-Id")})
                         legacy = self.path.startswith("/mcp/legacy")
-                        if legacy and self.headers.get("MCP-Protocol-Version") != "2025-11-25":
-                            self.reply(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Unsupported protocol version; supported versions: 2025-11-25"}})
+                        if self.path == "/mcp/discovery-error":
+                            self.reply(400, {"error": {"message": "Invalid discovery parameters"}})
                             return
-                        if legacy and "_meta" in params:
+                        lenient = self.path == "/mcp/legacy/lenient"
+                        version = next((v for v in ("2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07") if v in self.path), "2025-11-25")
+                        session = self.path.startswith("/mcp/legacy/session")
+                        if legacy and not lenient and self.headers.get("MCP-Protocol-Version") != version:
+                            self.reply(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": f"Unsupported protocol version; supported versions: {version}"}})
+                            return
+                        if legacy and not lenient and "_meta" in params:
                             self.reply(400, {"error": "unexpected modern metadata"})
                             return
-                        if self.headers.get("Mcp-Session-Id") or (not legacy and (self.headers.get("MCP-Protocol-Version") != "2026-07-28" or self.headers.get("Mcp-Method") != method or params.get("_meta", {}).get("io.modelcontextprotocol/protocolVersion") != "2026-07-28" or params.get("_meta", {}).get("io.modelcontextprotocol/clientCapabilities") != {})):
+                        if session:
+                            if method == "initialize":
+                                if params.get("protocolVersion") != version or self.headers.get("Mcp-Session-Id"):
+                                    self.reply(400, {"error": "invalid initialize"})
+                                    return
+                                self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                                    "protocolVersion": version, "capabilities": {"tools": {}},
+                                    "serverInfo": {"name": "fixture", "version": "1"}}},
+                                    {"Mcp-Session-Id": "fixture-session"})
+                                return
+                            if self.headers.get("Mcp-Session-Id") != "fixture-session":
+                                self.reply(400, {"jsonrpc": "2.0", "id": request.get("id"), "error": {
+                                    "code": -32000, "message": "Bad Request: Missing session ID"}})
+                                return
+                            if method == "notifications/initialized":
+                                self.reply(202 if "id" not in request else 400, {})
+                                return
+                        if (self.headers.get("Mcp-Session-Id") and not session) or (not legacy and (self.headers.get("MCP-Protocol-Version") != "2026-07-28" or self.headers.get("Mcp-Method") != method or params.get("_meta", {}).get("io.modelcontextprotocol/protocolVersion") != "2026-07-28" or params.get("_meta", {}).get("io.modelcontextprotocol/clientCapabilities") != {})):
                             self.reply(400, {"error": "stateless metadata required"})
                             return
                         if method in ("initialize", "notifications/initialized"):

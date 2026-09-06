@@ -26,6 +26,8 @@ Nine remote/OAuth tests additionally verify:
 * Persistent credentials, read-only process restart and rotated refresh tokens.
 * Redaction in `duckdb_secrets()` and no tokens in the `.duckdb` file.
 * JSON and SSE responses, HTTP errors and no tool-request replay.
+* Automatic older-version selection, initialization/session IDs, and compatibility
+  checks before tool execution after reopening; explicit version pins still work.
 * Transient/revoked refresh errors and preservation of omitted refresh scopes.
 * Temporary secret mode, offline login EXPLAIN and external-access enforcement.
 * The real `PRAGMA mcp_login` path in the official CLI, using a test browser
@@ -80,11 +82,31 @@ The join in the second process read the persistent `people` table and `live_issu
 view; the latter expands a persisted namespaced MCP table macro. Status afterward
 was `connected`. No server registration or discovery PRAGMA was run on reopen.
 
+## DAV-8 scalar chaining (2026-09-06)
+
+The full integration suite passed: **35 tests**, including nine scalar tests in
+`tests/test_scalar.py`. These cover dynamic server/tool/JSON arguments, recursive
+CTEs, materialized response reuse, 2,050 selected rows across vector chunks,
+NULL and empty inputs, offline EXPLAIN/PREPARE, runtime external-access checks,
+input validation, and failed-call counts. Cross-transport chaining was verified
+against the stdio and HTTP/OAuth fixtures after reopening a read-only database.
+The stock DuckDB 1.4.4 CLI also executed correlated scalar calls successfully.
+
+```bash
+MCP_EXTENSION="$PWD/build/dav-8/extension/mcp_context/mcp_context.duckdb_extension" \
+DUCKDB_CLI=/tmp/opencode/duckdb-cli-1.4.4/duckdb \
+  .venv/bin/python -m unittest discover -s tests -v
+```
+
+The original build cache referenced the checkout's former directory. This run
+used a freshly compiled extension in `build/dav-8`, reusing the existing DuckDB
+static archives and the Cargo-verified current HTTP/OAuth archive.
+
 ## Scope of this evidence
 
 This verifies real stdio and stateless HTTP/OAuth I/O through the native extension;
 it is not an interoperability certification for arbitrary MCP/OAuth deployments.
-Resource scans, full JSON Schema, cancellation, correlated remote calls and
+Resource scans, full JSON Schema, cancellation and
 multi-round-trip execution remain outside the implementation, as described in
 the README. The CI workflow repeats the integration suite and CLI demonstration;
 only the local runs above have been executed here.

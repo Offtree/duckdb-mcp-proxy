@@ -81,7 +81,7 @@ class RemoteIntegration(unittest.TestCase):
         self.assertEqual(sum(e.get("event") == "authorize" for e in new), 0)
         self.assertEqual(sum(e.get("event") == "register" for e in new), 0)
         self.assertEqual(sum(e.get("grant") == "refresh_token" for e in new), 1)
-        self.assertEqual([e["method"] for e in new if e["event"] == "mcp"], ["tools/call"])
+        self.assertEqual([e["method"] for e in new if e["event"] == "mcp"], ["tools/list", "tools/call"])
         self.assertTrue(all(e.get("session_header") is None for e in self.fixture.events))
         self.assertTrue(list(self.secrets.glob("*.duckdb_secret")))
         self.assertNotIn(b"fixture-access-", self.db.read_bytes())

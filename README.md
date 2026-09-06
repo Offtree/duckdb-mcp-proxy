@@ -42,32 +42,39 @@ SELECT * FROM demo.search(query := 'duckdb');
 **The extension still needs `LOAD` once per process.** Experimental extensions
 cannot add themselves to stock DuckDB's built-in autoload mappings. The database
 persists server definitions, discovered schemas and macros; the extension
-starts stdio servers lazily and sends self-contained requests to remote servers.
+starts stdio servers lazily and connects to remote servers on demand.
 There is no host-side MCP client or registration
 code. [Architecture investigation](docs/architecture.md) explains the API choices
 and production recommendation.
 
 ## Remote servers and OAuth
 
-Remote servers use **MCP 2026-07-28**, with no initialization handshake or MCP
-session IDs. OAuth login, token storage and refresh are handled by the extension.
+Remote servers use **automatic protocol compatibility** by default. The extension
+tries MCP 2026-07-28, then older supported revisions when the server rejects the
+version. Older HTTP servers requiring initialization get an `initialize` handshake
+and session ID handling. No separate, persistent SSE connection is opened.
+OAuth login, token storage and refresh are handled by the extension.
 
-For older endpoints that accept requests without initialization (including
-Firecrawl), set `protocol_version` explicitly in the fourth registration argument:
+Older endpoints such as Firecrawl need no version override:
 
 ```sql
 PRAGMA mcp_register_http('firecrawl', 'https://mcp.firecrawl.dev/v2/mcp-oauth',
-    'firecrawl_oauth', '{"protocol_version":"2025-11-25"}');
+    'firecrawl_oauth');
 ```
 
-The override persists across restarts. Supported values are `2026-07-28` (default),
+Supported revisions are `2026-07-28`,
 `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, and `2024-10-07`.
 Older revisions omit the newer per-request metadata and allow responses without
-`resultType`. This compatibility mode does not implement initialization or MCP
-sessions; endpoints requiring those remain unsupported. There is no automatic
-downgrade or request replay.
+`resultType`. Version selection uses read-only `tools/list` probes and is cached
+for the running database instance. After reopening, compatibility is checked
+before executing a persisted tool macro. Tool calls are never replayed during
+version selection. Authentication, network and ordinary server errors still surface.
 
-For an already registered server, update its persisted options before querying
+The optional `protocol_version` registration option pins a revision and bypasses
+automatic selection, retaining the handshake-free behavior of the explicit override.
+It persists across restarts.
+
+To pin an already registered server, update its persisted options before querying
 in a new connection (preserving its secret reference and other options):
 
 ```sql
@@ -315,7 +322,8 @@ compiled extension and dependency-free stdio and HTTP/OAuth fixtures. It checks:
 * primitive columns, nested JSON, explicit nulls, 5,000 rows and empty results;
 * schema-less fallback and root-array/text JSON output;
 * input/output validation, tool errors, no automatic retry, transaction rollback;
-* the unsupported correlated-call boundary and `enable_external_access`.
+* the table-function correlated-call boundary and `enable_external_access`;
+* scalar per-row and recursive chaining, NULL handling, execution counts and no retry;
 * stateless public/authenticated HTTP, JSON and SSE responses, and no tool replay;
 * PKCE, callback state/issuer checks, redaction and resource-bound secrets;
 * token refresh, rotation, revoked/transient failures and read-only process restart;
@@ -342,6 +350,7 @@ the host's dynamic-loader flags.
 | `mcp_tools('name')` | Live discovery: tool name, description, input/output JSON schemas, full definition. Does not persist discovery. |
 | `PRAGMA mcp_discover('name')` | Create macros and persist schemas for all discovered tools. First-time materialization; existing macro names cause an error. |
 | `mcp_tool(server := ..., tool := ..., args := ...)` | Native relational scan. Arguments accept a DuckDB STRUCT or JSON object string. |
+| `mcp_tool_json(server, tool, args)` | Volatile scalar returning a JSON payload. Accepts per-row server/tool names and JSON object arguments for correlated calls and recursive chaining. |
 | `demo.search(query := ...)` | Durable table macro generated during discovery; same native scan. |
 | `_mcp.servers`, `_mcp.tools`, `_mcp.http_servers` | Ordinary durable metadata tables in the primary database. Backed up with the database. Existing stdio databases continue to work; HTTP metadata is added on registration. |
 
@@ -390,27 +399,90 @@ rediscovery; do not change server definitions while queries are running.
 * `$ref`, combinators, formats, numeric bounds, enums and full JSON Schema
   validation are outside this slice. Full responses are materialized in memory.
 
+## Correlated calls and SQL chaining
+
+`mcp_tool_json(server VARCHAR, tool VARCHAR, args JSON) → JSON` accepts column
+arguments for all three parameters. It uses the registered stdio or HTTP server,
+including its existing OAuth or header authentication:
+
+```sql
+SELECT p.github_username,
+       mcp_tool_json('github', 'search_issues',
+                     json_object('query', p.github_username)) AS result
+FROM people p;
+```
+
+The result is the complete payload: `structuredContent` when present, otherwise
+JSON parsed from a single text block, otherwise the MCP result envelope. Arrays
+and object envelopes are preserved, with no typed-row conversion or output-schema
+validation. Input arguments must be a JSON object and receive the same supported
+input-schema validation as table calls. JSON null fields are passed through;
+SQL NULL in any parameter returns SQL NULL without calling a tool.
+
+Use a materialized CTE to reuse a response in multiple downstream expressions:
+
+```sql
+WITH issues AS MATERIALIZED (
+    SELECT mcp_tool_json('linear', 'get_issue', json_object('id', id)) AS result
+    FROM (VALUES ('DAV-7'), ('DAV-8')) AS ids(id)
+)
+SELECT mcp_tool_json('grep_app', 'searchGitHub',
+    json_object('query', regexp_extract(result->>'$.description',
+                                       'MCP-Protocol-Version'))) AS matches
+FROM issues;
+```
+
+Response paths and argument names depend on the server. For a tool returning
+`nextCursor`, a bounded recursive CTE can drive pagination:
+
+```sql
+WITH RECURSIVE pages(page, result) AS (
+    SELECT 1, mcp_tool_json('api', 'list_items', '{}')
+    UNION ALL
+    SELECT page + 1, mcp_tool_json('api', 'list_items',
+        json_object('cursor', result->>'$.nextCursor'))
+    FROM pages
+    WHERE result->>'$.nextCursor' IS NOT NULL AND page < 100
+)
+SELECT * FROM pages;
+```
+
+**Execution semantics:** the scalar is volatile, so constant arguments are not
+folded or cached. Binding, `EXPLAIN`, and preparing a statement perform no scalar
+RPCs. Each evaluated non-NULL row invokes once per function occurrence; duplicate
+inputs still make separate calls. SQL can prune unused expressions and evaluate
+more rows than a final `LIMIT` returns. Bound the input relation before calling,
+and materialize responses when reusing them. Calls share the existing serialized
+runtime; fan-out is not parallel, and row execution order is not guaranteed.
+
+Any validation, transport or tool error aborts the statement; failed calls are
+never retried automatically. Earlier calls may already have completed, and remote
+effects are not rolled back by SQL transactions. Re-running a query invokes the
+tools again. Mutating tools are allowed; this API does not enforce read-only tool
+annotations. Choose tools and bound fan-out accordingly.
+
 ## Current boundaries
 
-* **Remote protocol:** targets stateless MCP 2026-07-28. Legacy session-based HTTP,
-  multi-round-trip input, subscriptions, tasks, resource scans and prompts are
+* **Remote protocol:** supports stateless MCP 2026-07-28 and automatic compatibility
+  with older HTTP revisions, including initialization and session IDs.
+  The legacy GET-SSE/POST transport, multi-round-trip input, subscriptions, tasks, resource scans and prompts are
   not implemented. JSON and finite SSE responses are supported; remote responses
-  are bounded to 32 MiB. There is no fallback to legacy HTTP sessions.
+  are bounded to 32 MiB.
 * **No custom `CREATE MCP SERVER` grammar.** PRAGMA registration is the supported
   SQL alternative. Namespaced tool syntax works through persistent macros after
   discovery, not first-reference synthesis of arbitrary missing functions.
-* **Constant parameters only.** DuckDB's table-function binder rejects
-  `demo.search(query := p.github_username)`. Fetch a live relation with constant
-  arguments and join/filter locally; a per-person correlated RPC is not supported.
+* **Table functions require constant parameters.** DuckDB's table-function binder
+  rejects `demo.search(query := p.github_username)`. Use `mcp_tool_json` for
+  correlated calls, or fetch a typed relation with constant arguments and join locally.
 * **Primary database metadata only.** Attached-database routing, transactional
   metadata snapshot integration and concurrent metadata mutation are deferred.
 * One serialized runtime per DatabaseInstance, shared across its connections.
   Stdio processes end when that instance closes. Remote HTTP connections can be
-  reused by the HTTP library; no remote MCP session is established. There is no
+  reused by the HTTP library; older servers' session IDs are held in memory. There is no
   result cache. A failed tool request is not retried. Stdio initialization
   requests MCP 2025-06-18 (structured tool output), with
   2025-03-26 and 2024-11-05 negotiation accepted for older servers.
-* Tool invocation happens in scan initialization, not bind/EXPLAIN. SQL may prune
+* Table-tool invocation happens in scan initialization, not bind/EXPLAIN. SQL may prune
   an unused scan; each initialized scan invokes once. External effects are not
   rolled back by SQL. Discovery may contact the server during bind if no snapshot
   exists. The transport has a 30-second default timeout but no DuckDB cancellation

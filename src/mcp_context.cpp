@@ -4,6 +4,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/function/pragma_function.hpp"
+#include "duckdb/function/scalar_function.hpp"
 #include "protocol/mcp_transport.hpp"
 #include "protocol/mcp_message.hpp"
 #include "nlohmann/json.hpp"
@@ -341,6 +342,56 @@ static void Columns(BindData &d) {
 		d.types = {LogicalType::JSON()};
 	}
 }
+static Json LookupTool(ClientContext &context, Runtime &runtime, const Definition &definition, const string &name) {
+	Connection c(DatabaseInstance::GetDatabase(context));
+	auto stored = Query(c, "SELECT definition FROM " + Meta(context) + "tools WHERE server=" + Quote(definition.name) +
+	                           " AND name=" + Quote(name));
+	if (stored->RowCount())
+		return Json::parse(stored->GetValue(0, 0).ToString());
+	for (auto &tool : runtime.Discover(context, definition))
+		if (tool["name"] == name)
+			return tool;
+	throw BinderException("Unknown MCP tool: %s", name);
+}
+static Json Payload(const Json &result) {
+	if (result.contains("structuredContent"))
+		return result["structuredContent"];
+	if (result.contains("content") && result["content"].is_array() && result["content"].size() == 1 &&
+	    result["content"][0].value("type", "") == "text") {
+		auto payload = Json::parse(result["content"][0].value("text", ""), nullptr, false);
+		if (!payload.is_discarded())
+			return payload;
+	}
+	return result;
+}
+static void ToolJson(Runtime &runtime, DataChunk &input, ExpressionState &state, Vector &result) {
+	auto &context = state.GetContext();
+	CheckExternal(context);
+	// Cache metadata within a chunk, never RPC results. Every evaluated non-NULL row calls the tool.
+	std::map<string, Definition> servers;
+	std::map<std::pair<string, string>, Json> tools;
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	for (idx_t row = 0; row < input.size(); row++) {
+		auto server = input.GetValue(0, row), tool = input.GetValue(1, row), args = input.GetValue(2, row);
+		if (server.IsNull() || tool.IsNull() || args.IsNull()) {
+			result.SetValue(row, Value(LogicalType::JSON()));
+			continue;
+		}
+		auto arguments = Json::parse(args.ToString());
+		if (!arguments.is_object())
+			throw InvalidInputException("MCP args must be a JSON object");
+		auto name = server.ToString(), tool_name = tool.ToString();
+		if (!servers.count(name))
+			servers.emplace(name, Lookup(context, name));
+		auto &definition = servers.at(name);
+		auto key = std::make_pair(name, tool_name);
+		if (!tools.count(key))
+			tools.emplace(key, LookupTool(context, runtime, definition, tool_name));
+		Validate(arguments, tools.at(key).value("inputSchema", Json::object()), "arguments");
+		auto payload = Payload(runtime.Call(context, definition, tool_name, arguments));
+		result.SetValue(row, Value(payload.dump()));
+	}
+}
 static unique_ptr<FunctionData> BindTool(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &types, vector<string> &names) {
 	CheckExternal(context);
@@ -367,20 +418,7 @@ static unique_ptr<FunctionData> BindTool(ClientContext &context, TableFunctionBi
 				++it;
 		}
 	}
-	Json tool;
-	Connection c(DatabaseInstance::GetDatabase(context));
-	auto stored = Query(c, "SELECT definition FROM " + Meta(context) +
-	                           "tools WHERE server=" + Quote(d->definition.name) + " AND name=" + Quote(d->tool));
-	if (stored->RowCount())
-		tool = Json::parse(stored->GetValue(0, 0).ToString());
-	else
-		for (auto &t : d->runtime->Discover(context, d->definition))
-			if (t["name"] == d->tool) {
-				tool = t;
-				break;
-			}
-	if (tool.is_null())
-		throw BinderException("Unknown MCP tool: %s", d->tool);
+	auto tool = LookupTool(context, *d->runtime, d->definition, d->tool);
 	Validate(d->args, tool.value("inputSchema", Json::object()), "arguments");
 	d->schema = tool.value("outputSchema", Json::object());
 	Columns(*d);
@@ -474,17 +512,7 @@ static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFu
 	}
 	CheckExternal(context);
 	auto result = d.runtime->Call(context, d.definition, d.tool, d.args);
-	Json payload;
-	if (result.contains("structuredContent"))
-		payload = result["structuredContent"];
-	else if (result.contains("content") && result["content"].is_array() && result["content"].size() == 1 &&
-	         result["content"][0].value("type", "") == "text") {
-		auto text = result["content"][0].value("text", "");
-		payload = Json::parse(text, nullptr, false);
-		if (payload.is_discarded())
-			payload = result;
-	} else
-		payload = result;
+	auto payload = Payload(result);
 	if (d.fallback) {
 		s->rows.push_back({Value(payload.dump())});
 		return std::move(s);
@@ -641,6 +669,14 @@ static string Discover(ClientContext &context, const FunctionParameters &p) {
 static void Load(ExtensionLoader &loader) {
 	RegisterRemoteSecrets(loader);
 	auto runtime = make_shared_ptr<Runtime>();
+	ScalarFunction scalar("mcp_tool_json", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::JSON()},
+	                      LogicalType::JSON(), [runtime](DataChunk &input, ExpressionState &state, Vector &result) {
+		                      ToolJson(*runtime, input, state, result);
+	                      });
+	scalar.stability = FunctionStability::VOLATILE;
+	scalar.errors = FunctionErrors::CAN_THROW_RUNTIME_ERROR;
+	scalar.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	loader.RegisterFunction(scalar);
 	TableFunction tool("mcp_tool", {}, Scan, BindTool, Init);
 	tool.named_parameters = {{"server", LogicalType::VARCHAR},
 	                         {"tool", LogicalType::VARCHAR},

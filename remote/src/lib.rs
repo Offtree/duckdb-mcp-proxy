@@ -1,4 +1,4 @@
-//! Synchronous C ABI around a current-thread async runtime. No MCP sessions.
+//! Synchronous C ABI around a current-thread async runtime.
 //! OAuth state lives only between explicit login_begin/login_finish operations.
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -24,6 +24,14 @@ use tokio::{
 type Result<T> = std::result::Result<T, String>;
 type SaveFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i32;
 const VERSION: &str = "2026-07-28";
+const VERSIONS: &[&str] = &[
+    VERSION,
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+    "2024-10-07",
+];
 const MAX_BODY: usize = 32 * 1024 * 1024;
 const LOGIN_TTL: Duration = Duration::from_secs(180);
 
@@ -229,6 +237,8 @@ struct Remote {
     client: Client,
     pending: HashMap<String, Pending>,
     challenges: HashMap<String, String>,
+    versions: HashMap<String, String>,
+    sessions: HashMap<String, String>,
     next_id: u64,
 }
 pub struct Bridge {
@@ -361,19 +371,153 @@ impl Remote {
         &mut self,
         url: &str,
         method: &str,
-        mut params: Value,
+        params: Value,
         token: Option<String>,
         headers: HeaderMap,
         input: &Value,
     ) -> Result<Value> {
+        if let Some(version) = input["options"]["protocol_version"].as_str() {
+            return self
+                .request_version(url, method, params, token, headers, input, version)
+                .await;
+        }
+        let key = format!("{url}\n{}\n{}", input["secret_name"], input["options"]);
+        if let Some(version) = self.versions.get(&key).cloned() {
+            let result = self
+                .request_version(url, method, params, token, headers, input, &version)
+                .await;
+            if result.is_err() {
+                // Reconnect on a later query; never replay this request.
+                self.versions.remove(&key);
+                self.sessions.remove(&key);
+            }
+            return result;
+        }
+        // Negotiate using a read-only request, including after reopening a database
+        // whose persisted macros may invoke tools/call before any discovery.
+        self.sessions.remove(&key);
+        let probe_params = if method == "tools/list" {
+            params.clone()
+        } else {
+            json!({})
+        };
+        for (index, version) in VERSIONS.iter().enumerate() {
+            let mut selected = (*version).to_owned();
+            let mut probe = self
+                .request_version(
+                    url,
+                    "tools/list",
+                    probe_params.clone(),
+                    token.clone(),
+                    headers.clone(),
+                    input,
+                    &selected,
+                )
+                .await;
+            if let Err(error) = &probe {
+                let lower = error.to_ascii_lowercase();
+                if *version != VERSION
+                    && (lower.contains("session") || lower.contains("initializ"))
+                    && (lower.starts_with("mcp http status 400")
+                        || lower.starts_with("mcp json-rpc error"))
+                {
+                    let initialized = self
+                        .request_version(
+                            url,
+                            "initialize",
+                            json!({
+                                "protocolVersion": selected,
+                                "capabilities": {},
+                                "clientInfo": {"name": "duckdb-mcp-context", "version": "0.2.0"}
+                            }),
+                            token.clone(),
+                            headers.clone(),
+                            input,
+                            &selected,
+                        )
+                        .await?;
+                    let negotiated = initialized["protocolVersion"]
+                        .as_str()
+                        .ok_or("MCP initialize response missing protocolVersion")?;
+                    if !VERSIONS.contains(&negotiated) || negotiated == VERSION {
+                        self.sessions.remove(&key);
+                        return Err("Unsupported MCP initialize protocol version".into());
+                    }
+                    selected = negotiated.into();
+                    self.request_version(
+                        url,
+                        "notifications/initialized",
+                        json!({}),
+                        token.clone(),
+                        headers.clone(),
+                        input,
+                        &selected,
+                    )
+                    .await?;
+                    probe = self
+                        .request_version(
+                            url,
+                            "tools/list",
+                            probe_params.clone(),
+                            token.clone(),
+                            headers.clone(),
+                            input,
+                            &selected,
+                        )
+                        .await;
+                }
+            }
+            match probe {
+                Ok(result) => {
+                    self.versions.insert(key.clone(), selected.clone());
+                    if method == "tools/list" {
+                        return Ok(result);
+                    }
+                    let result = self
+                        .request_version(url, method, params, token, headers, input, &selected)
+                        .await;
+                    if result.is_err() {
+                        self.versions.remove(&key);
+                        self.sessions.remove(&key);
+                    }
+                    return result;
+                }
+                Err(error) => {
+                    // Version rejection or a legacy response permits another probe.
+                    // Auth, network, parsing and ordinary server errors are final.
+                    let lower = error.to_ascii_lowercase();
+                    let legacy_response = *version == VERSION
+                        && error == "MCP 2026-07-28 response missing resultType";
+                    if index + 1 == VERSIONS.len()
+                        || !(legacy_response
+                            || ((lower.starts_with("mcp http status 400")
+                                || lower.starts_with("mcp json-rpc error"))
+                                && (lower.contains("unsupported protocol version")
+                                    || lower.contains("unsupported mcp protocol version")
+                                    || (*version == VERSION
+                                        && (lower.contains("session")
+                                            || lower.contains("initializ"))))))
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    async fn request_version(
+        &mut self,
+        url: &str,
+        method: &str,
+        mut params: Value,
+        token: Option<String>,
+        headers: HeaderMap,
+        input: &Value,
+        version: &str,
+    ) -> Result<Value> {
         let header_auth = input["header_auth"].as_bool().unwrap_or(false);
-        let version = input["options"]["protocol_version"]
-            .as_str()
-            .unwrap_or(VERSION);
-        if !matches!(
-            version,
-            "2026-07-28" | "2025-11-25" | "2025-06-18" | "2025-03-26" | "2024-11-05" | "2024-10-07"
-        ) {
+        if !VERSIONS.contains(&version) {
             return Err("Unsupported MCP protocol_version".into());
         }
         let id = self.next_id;
@@ -401,9 +545,19 @@ impl Remote {
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
+        let key = format!("{url}\n{}\n{}", input["secret_name"], input["options"]);
+        if method != "initialize" {
+            if let Some(session) = self.sessions.get(&key) {
+                request = request.header("Mcp-Session-Id", session);
+            }
+        }
+        let mut body = json!({"jsonrpc":"2.0","method":method,"params":params});
+        if method != "notifications/initialized" {
+            body["id"] = json!(id);
+        }
         // No redirects or automatic retry of tool requests.
         let response = request
-            .json(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+            .json(&body)
             .send()
             .await
             .map_err(|_| "MCP HTTP request failed (network or TLS); request was not retried")?;
@@ -444,7 +598,12 @@ impl Remote {
             }
             let detail = serde_json::from_slice::<Value>(&body)
                 .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
+                .and_then(|v| {
+                    v["error"]["message"]
+                        .as_str()
+                        .or_else(|| v["error"].as_str())
+                        .map(str::to_owned)
+                })
                 .map(|s| {
                     s.chars()
                         .filter(|c| !c.is_control())
@@ -461,6 +620,14 @@ impl Remote {
                 }
             ));
         }
+        if method == "notifications/initialized" {
+            return Ok(json!({}));
+        }
+        let session = response
+            .headers()
+            .get("Mcp-Session-Id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let content_type = response
             .headers()
             .get("Content-Type")
@@ -515,7 +682,14 @@ impl Remote {
             return Err("MCP response version or ID mismatch".into());
         }
         if let Some(error) = message.get("error") {
-            return Err(format!("MCP JSON-RPC error {}", error["code"]));
+            let detail: String = error["message"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(2048)
+                .collect();
+            return Err(format!("MCP JSON-RPC error {}: {detail}", error["code"]));
         }
         let result = message.get("result").ok_or("MCP response missing result")?;
         match result["resultType"].as_str() {
@@ -525,7 +699,15 @@ impl Remote {
             ),
             Some("complete") => {}
             None if version != VERSION && result.get("resultType").is_none() => {}
+            None if result.get("resultType").is_none() => {
+                return Err("MCP 2026-07-28 response missing resultType".into());
+            }
             _ => return Err("Expected MCP 2026-07-28 resultType 'complete'".into()),
+        }
+        if method == "initialize" {
+            if let Some(session) = session {
+                self.sessions.insert(key, session);
+            }
         }
         Ok(result.clone())
     }
@@ -611,6 +793,8 @@ pub extern "C" fn mcp_remote_new() -> *mut Bridge {
                 client,
                 pending: HashMap::new(),
                 challenges: HashMap::new(),
+                versions: HashMap::new(),
+                sessions: HashMap::new(),
                 next_id: 1,
             },
         })))
