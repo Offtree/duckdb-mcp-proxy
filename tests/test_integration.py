@@ -4,6 +4,7 @@ Each worker is a new OS process, not merely another DuckDB connection.
 """
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -80,6 +81,22 @@ def worker(mode, db, log):
 
 
 class Integration(unittest.TestCase):
+    def test_stock_cli_discovery_error_is_readable_and_recoverable(self):
+        cli = os.environ.get("DUCKDB_CLI") or shutil.which("duckdb")
+        if not cli:
+            self.skipTest("Set DUCKDB_CLI to the stock DuckDB 1.5.5 executable")
+        result = subprocess.run(
+            [cli, "-unsigned", "-csv", "-noheader", ":memory:"],
+            input=(f"LOAD {quote(EXTENSION)};\n"
+                   "PRAGMA mcp_register_http('known', 'https://example.com/mcp');\n"
+                   "PRAGMA mcp_discover('nope');\nSELECT 'still alive';\n"),
+            text=True, capture_output=True, timeout=30,
+        )
+        self.assertGreaterEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Unknown MCP server: nope", result.stderr)
+        self.assertNotIn("Unknown exception", result.stderr)
+        self.assertIn("still alive", result.stdout)
+
     def setUp(self):
         temp_root = os.environ.get("TMPDIR") or ("/tmp/opencode" if Path("/tmp/opencode").is_dir() else None)
         self.tmp = tempfile.TemporaryDirectory(prefix="mcp-context-", dir=temp_root)
